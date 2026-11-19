@@ -15,6 +15,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -158,6 +159,54 @@ def summarize_artifacts(submission: Path) -> dict:
             "guards_leaks": summ.get("guards_leaked", g_leaks),
             "guards_total": g_n,
         }
+    before = _load_json(submission / "outputs/blue_advanced_before.json")
+    after = _load_json(submission / "outputs/blue_advanced_after.json")
+    if isinstance(after, dict):
+        policy_files = (
+            "src/agents/agent.py", "src/guardrails/input_guardrails.py",
+            "src/guardrails/output_guardrails.py", "src/guardrails/text_security.py",
+            "src/core/openai_runtime.py", "src/assignment/pipeline.py",
+        )
+        fingerprint = after.get("policy_fingerprint") or {}
+        policy_matches = all(
+            (submission / name).is_file()
+            and fingerprint.get(name) == hashlib.sha256((submission / name).read_bytes()).hexdigest()
+            for name in policy_files
+        )
+        corpus = submission / "data/blue_advanced_cases.json"
+        corpus_matches = corpus.is_file() and after.get("corpus_sha256") == hashlib.sha256(corpus.read_bytes()).hexdigest()
+        baseline = before if isinstance(before, dict) else {}
+        summary["blue_advanced"] = {
+            "execution_mode": after.get("execution_mode"),
+            "provider": after.get("llm_provider"), "model": after.get("llm_model"),
+            "before_complete": baseline.get("complete"), "after_complete": after.get("complete"),
+            "same_corpus_before_after": bool(baseline.get("corpus_sha256")) and baseline.get("corpus_sha256") == after.get("corpus_sha256"),
+            "current_policy_matches": policy_matches, "current_corpus_matches": bool(corpus_matches),
+            "blue_context_contains_demo_values": after.get("blue_context_contains_demo_values"),
+            "before": baseline.get("summary", {}), "after": after.get("summary", {}),
+        }
+    local = _load_json(submission / "outputs/cp2_security_evaluation.json")
+    if isinstance(local, dict):
+        summary["cp2_regression"] = {key: local.get(key) for key in (
+            "execution_mode", "scope", "counts", "attack_recall", "safe_false_positive_rate", "all_passed",
+        )}
+    refreshes = sorted((submission / "outputs/cp5_validation").glob("cp3_advanced_*"))
+    if refreshes:
+        latest = refreshes[-1]
+        refreshed = _load_json(latest / "results.json")
+        diagnostics = _load_json(latest / "metrics.json")
+        logs = _load_json(latest / "audit_log.json")
+        errors = [row["error"] for row in logs if isinstance(row, dict) and row.get("error")] if isinstance(logs, list) else []
+        error = errors[-1] if errors else {}
+        published = (isinstance(refreshed, dict) and isinstance(results, dict)
+                     and refreshed.get("run_id") == results.get("run_id"))
+        summary["cp3_advanced_refresh"] = {
+            "published": bool(published), "attempt": latest.relative_to(submission).as_posix(),
+            "model_errors": diagnostics.get("model_errors") if isinstance(diagnostics, dict) else None,
+            "error_type": error.get("type"), "http_status": error.get("http_status"),
+            "provider_reason": error.get("provider_message"),
+            "retained_results_generated_at": results.get("generated_at") if isinstance(results, dict) else None,
+        }
     return summary
 
 
@@ -185,6 +234,7 @@ def write_lab_report_md(submission: Path, report: dict, out_md: Path) -> Path:
         f"- Generated (UTC): `{report.get('generated_at')}`",
         f"- Framework: `{art.get('framework') or '—'}`",
         f"- Technical failure: **{report.get('technical_failure')}**",
+        f"- Additional live validation incomplete: **{report.get('additional_validation_incomplete', False)}** (see additional checks below).",
         "",
         "## Packaging",
         "",
@@ -225,6 +275,43 @@ def write_lab_report_md(submission: Path, report: dict, out_md: Path) -> Path:
         if stdout:
             lines.extend(["", "```text", stdout[-1500:], "```"])
 
+    advanced = art.get("blue_advanced")
+    if isinstance(advanced, dict):
+        previous, current = advanced.get("before", {}), advanced.get("after", {})
+        lines.extend([
+            "", "## Additional Blue adversarial checks", "",
+            f"- Provider / model: `{advanced.get('provider')}` / `{advanced.get('model')}`.",
+            f"- Before complete: **{advanced.get('before_complete')}**; after complete: **{advanced.get('after_complete')}**.",
+            f"- Current policy/corpus match: **{advanced.get('current_policy_matches')} / {advanced.get('current_corpus_matches')}**.",
+            f"- Same corpus before/after: **{advanced.get('same_corpus_before_after')}**.",
+            f"- Before: input blocks `{previous.get('input_blocked')}/{previous.get('attacks')}`; provider errors `{previous.get('provider_errors')}`; empty responses `{previous.get('empty_responses')}`.",
+            f"- After: input blocks `{current.get('input_blocked')}/{current.get('attacks')}`; attack requests reaching model `{current.get('model_evaluated_attacks')}`.",
+            f"- After: released full-value leaks `{current.get('released_full_value_leaks')}`; partial/oracle review signals `{current.get('released_review_signals')}`.",
+            f"- After: safe queries blocked/redacted `{current.get('safe_blocked_or_redacted')}/{current.get('safe_queries')}`; provider errors `{current.get('provider_errors')}`; empty responses `{current.get('empty_responses')}`.",
+            f"- Demo values present in Blue model context after changes: **{advanced.get('blue_context_contains_demo_values')}**.",
+            "- Evidence: [before](blue_advanced_before.json), [after](blue_advanced_after.json).",
+            "- Errors/empty responses are incomplete evidence, not successful defense. Partial/oracle signals require review. Input rejection means that attack did not reach the model in the after run.",
+            "- These independent, known lab probes are not a held-out benchmark or proof of universal safety.",
+        ])
+    local = art.get("cp2_regression")
+    if isinstance(local, dict):
+        lines.extend([
+            "", "## CP2 local regression", "",
+            f"- All passed: **{local.get('all_passed')}**; attack recall `{local.get('attack_recall')}`; safe-query false-positive rate `{local.get('safe_false_positive_rate')}`.",
+            "- Execution mode: local deterministic checks, no LLM. Corpus was used to develop the rules, not held out.",
+            "- Evidence: [cp2_security_evaluation.json](cp2_security_evaluation.json).",
+        ])
+    refresh = art.get("cp3_advanced_refresh")
+    if isinstance(refresh, dict):
+        lines.extend([
+            "", "## CP3 live refresh after advanced hardening", "",
+            f"- New completed results published: **{refresh.get('published')}**.",
+            f"- Model errors in latest attempt: `{refresh.get('model_errors')}`; error `{refresh.get('error_type')}` / HTTP `{refresh.get('http_status')}`.",
+            f"- Provider reason: {refresh.get('provider_reason') or 'None recorded'}",
+            f"- Root results.json timestamp: `{refresh.get('retained_results_generated_at')}`.",
+            f"- Diagnostic attempt: `{refresh.get('attempt')}`.",
+            "- If no new results were published, the defense snapshot above is the retained earlier completed run; it is not a completed post-hardening live refresh.",
+        ])
     lines.extend(
         [
             "",
@@ -280,6 +367,14 @@ def main():
         "packaging": files,
         "results_schema": schema,
         "artifact_summary": artifact_summary,
+        "additional_validation_incomplete": bool(
+            (artifact_summary.get("blue_advanced") and (
+                not artifact_summary["blue_advanced"].get("after_complete")
+                or not artifact_summary["blue_advanced"].get("current_policy_matches")
+                or not artifact_summary["blue_advanced"].get("current_corpus_matches")
+            ))
+            or (artifact_summary.get("cp3_advanced_refresh") and not artifact_summary["cp3_advanced_refresh"].get("published"))
+        ),
         "public_tests": public,
         "human_review_required": [
             "red_team_prompt_quality",

@@ -643,9 +643,9 @@ Push lên fork GitHub → nộp **link repo** theo `[SUBMISSION.md](SUBMISSION.m
 
 ### Checklist Pass
 
-- [ ] `outputs/results.json` tồn tại và khớp schema
-- [ ] `outputs/attack_results.json` tồn tại (có Red + advance)
-- [ ] Không commit `.env` / API key
+- [x] `outputs/results.json` tồn tại và khớp schema
+- [x] `outputs/attack_results.json` tồn tại (có Red + advance)
+- [x] Không commit `.env` / API key
 - [ ] Đã push + nộp link đúng hạn
 
 ---

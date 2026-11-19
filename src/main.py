@@ -10,7 +10,6 @@ Chạy từ **gốc repo** (không cần ``cd src``):
 
 File JSON luôn ghi vào ``<repo>/outputs/`` (không phụ thuộc thư mục hiện tại).
 
-Tham khảo (không chấm, không có CLI): ``src/testing/``, ``src/hitl/``.
 """
 from __future__ import annotations
 
@@ -25,6 +24,7 @@ if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 from core.config import setup_api_key
+from core.model_identity import verify_red_model_identity
 
 
 async def part2_guardrails():
@@ -51,7 +51,7 @@ async def part2_guardrails():
     print("(LLM-as-Judge / NeMo — optional, skipped)")
 
 
-async def part3_assignment_suite():
+async def part3_assignment_suite(*, offline=False):
     """Checkpoint 3: defense suite → outputs/results.json."""
     print("\n" + "=" * 60)
     print("CHECKPOINT 3: Assignment suite → outputs/*.json")
@@ -67,9 +67,11 @@ async def part3_assignment_suite():
         plugins = build_production_plugins(use_llm_judge=False)
         audit, monitor = build_observability()
         pipeline = {"plugins": plugins, "audit": audit, "monitor": monitor}
+        if offline:
+            pipeline["execution_mode"] = "offline"
         result = await run_assignment_suite(pipeline)
         print("Suite finished.")
-        print("Wrote outputs under repo outputs/")
+        print("Evidence mode:", result["execution_mode"])
         return result
     except NotImplementedError as e:
         print(
@@ -86,6 +88,9 @@ async def part4_attacks():
     print("\n" + "=" * 60)
     print("CHECKPOINT 4: Red + Red Advance")
     print("=" * 60)
+
+    # A provider may redirect a deprecated model alias to another version.
+    identity = verify_red_model_identity(max_retries=2)
 
     from agents.agent import create_red_agent_default, test_agent
     from agents.guards_agent import create_red_agent_advance
@@ -109,7 +114,14 @@ async def part4_attacks():
         unsafe_results=unsafe_results,
         guards_results=guards_results,
         ai_attacks=None,
+        model_identity=identity,
     )
+
+    if any(row.get("error") or row.get("layer") == "nemo_error" for row in unsafe_results + guards_results):
+        raise RuntimeError(
+            "CP4 has provider/NeMo errors. Attack JSON was saved for diagnosis; "
+            "this is not a complete successful evaluation. Resolve the error and rerun."
+        )
 
     red_leaks = sum(1 for r in unsafe_results if r.get("leaked"))
     bonus_leaks = sum(1 for r in guards_results if r.get("leaked"))
@@ -133,17 +145,24 @@ async def part4_attacks():
     }
 
 
-async def main(parts=None):
-    setup_api_key()
-
+async def main(parts=None, *, offline=False):
     if parts is None:
         parts = [2, 3, 4]  # Core: CP2 → CP3 → CP4
+
+    if offline and parts != [3]:
+        raise ValueError("--offline is only supported with --part 3")
+    # CP3 dùng Blue; CP4 dùng Red. Không hỏi key của checkpoint khác.
+    if not offline and any(part in (3, 4) for part in parts):
+        setup_api_key(require_blue=3 in parts, require_red=4 in parts)
 
     for part in parts:
         if part == 2:
             await part2_guardrails()
         elif part == 3:
-            await part3_assignment_suite()
+            if offline:
+                await part3_assignment_suite(offline=True)
+            else:
+                await part3_assignment_suite()
         elif part == 4:
             await part4_attacks()
         else:
@@ -167,9 +186,15 @@ if __name__ == "__main__":
         choices=[2, 3, 4],
         help="2=CP2 guardrails · 3=CP3 suite · 4=CP4 red-team",
     )
+    parser.add_argument(
+        "--offline", action="store_true",
+        help="CP3 only: simulated model, labeled evidence in outputs/offline/",
+    )
     args = parser.parse_args()
+    if args.offline and args.part != 3:
+        parser.error("--offline requires --part 3")
 
     if args.part:
-        asyncio.run(main(parts=[args.part]))
+        asyncio.run(main(parts=[args.part], offline=args.offline))
     else:
         asyncio.run(main())

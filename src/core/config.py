@@ -234,13 +234,17 @@ def is_harder_model() -> bool:
     return any(x in m for x in ("gpt-5.6", "pro", "gemini-3.8", "gemini-3.7"))
 
 
-def setup_api_key():
-    """Ensure keys for Blue (OpenRouter) + Red / Red Advance (OpenAI or Gemini)."""
-    if not get_openrouter_api_key():
-        os.environ["OPENROUTER_API_KEY"] = input(
-            "Enter OpenRouter API Key (Blue): "
-        ).strip()
-    print(f"Blue  — {blue_provider_label()}  [LOCKED]")
+def setup_api_key(*, require_blue: bool = True, require_red: bool = True):
+    """Request only the credentials needed by the selected checkpoints."""
+    if require_blue:
+        if not get_openrouter_api_key():
+            os.environ["OPENROUTER_API_KEY"] = input(
+                "Enter OpenRouter API Key (Blue): "
+            ).strip()
+        print(f"Blue  — {blue_provider_label()}  [LOCKED]")
+
+    if not require_red:
+        return
 
     red = get_red_provider()
     model = get_red_model()

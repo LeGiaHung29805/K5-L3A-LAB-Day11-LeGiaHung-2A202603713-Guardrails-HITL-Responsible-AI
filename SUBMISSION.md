@@ -59,7 +59,7 @@ K4-L3<A hoặc B>-DAY11-<HoVaTen>-<MSSV>-Guardrails-HITL-Responsible-AI/
 │   ├── assignment/           <- Checkpoint 3
 │   ├── attacks/              <- Checkpoint 4
 │   ├── agents/               <- unsafe + guards (không sửa secret)
-│   ├── hitl/ · testing/      <- tham khảo, không chấm
+│   ├── core/                <- cấu hình và runtime gọi model
 │   └── main.py
 ├── outputs/                  <- SINH KHI CHẠY — không tạo sẵn placeholder
 │   ├── results.json          <- BẮT BUỘC (phòng thủ) · khớp schema
@@ -134,11 +134,11 @@ K4-L3<A hoặc B>-DAY11-<HoVaTen>-<MSSV>-Guardrails-HITL-Responsible-AI/
 
 ## 5. Checklist trước khi nộp link
 
-- [ ] Có `outputs/results.json` và **validate** được với `schemas/results.schema.json`
-- [ ] Có `outputs/attack_results.json` (unsafe + guards)
-- [ ] **Không** commit `.env` / API key
-- [ ] `outputs/` không chứa placeholder tự tạo tay (file do `python src/main.py --part 3|4` sinh ra)
-- [ ] Đã chạy tự kiểm:
+- [x] Có `outputs/results.json` và **validate** được với `schemas/results.schema.json`
+- [x] Có `outputs/attack_results.json` (unsafe + guards)
+- [x] **Không** commit `.env` / API key
+- [x] `outputs/` không chứa placeholder tự tạo tay (file do `python src/main.py --part 3|4` sinh ra)
+- [x] Đã chạy tự kiểm: smoke **39 passed**, public **334 passed**; báo cáo hiện tại không có lỗi kỹ thuật.
 
 **Windows (PowerShell):**
 
@@ -158,6 +158,8 @@ pytest tests/public -q
 python scripts/grade.py --submission-dir . --out outputs/grade_report.json
 ```
 
-- [ ] Nộp **link repo** đúng hạn lên LMS / CodeLabs
+- [ ] Đối chiếu tên repository với mẫu Khóa 5 ở mục 1 trước khi nộp.
+- [ ] Commit và push code cùng 8 file kết quả hiện tại trong `outputs/`.
+- [ ] Nộp **link repo** đúng hạn lên LMS / CodeLabs.
 
 > Máy không chạy được (thiếu lib, sai path, lỗi cú pháp) → phần chấm máy = lỗi kỹ thuật — sửa đóng gói trước khi nộp.

@@ -4,6 +4,7 @@ Checkpoint 2 — Output Guardrails
   - OutputGuardrailPlugin (ADK)           ← bắt buộc
   - LLM-as-Judge                          ← optional (không chấm)
 """
+import asyncio
 import re
 import textwrap
 
@@ -13,6 +14,9 @@ from google.adk import runners
 from google.adk.plugins import base_plugin
 
 from core.utils import chat_with_agent
+from core.config import DEMO_SECRETS
+from guardrails.input_guardrails import requests_protected_information
+from guardrails.text_security import InspectionLimitError, MAX_OUTPUT_CHARS, normalize_text, policy_text, security_views
 
 
 # ============================================================
@@ -27,7 +31,7 @@ from core.utils import chat_with_agent
 # - "redacted": cleaned response (PII replaced with [REDACTED])
 # ============================================================
 
-def content_filter(response: str) -> dict:
+def content_filter(response: str, *, user_input: str | None = None) -> dict:
     """Filter response for PII, secrets, and harmful content.
 
     Args:
@@ -36,29 +40,80 @@ def content_filter(response: str) -> dict:
     Returns:
         dict with 'safe', 'issues', and 'redacted' keys
     """
+    if len(response) > MAX_OUTPUT_CHARS:
+        return {"safe": False, "issues": ["size: output exceeds inspection limit"], "redacted": "[REDACTED]"}
+    # Do not infer safety from the candidate's wording ("I refuse ... but ...").
+    # If a privileged probe reached the model, hold its entire response, including
+    # an otherwise innocuous MATCH, a number, or an unknown partial encoding.
+    if user_input and requests_protected_information(user_input):
+        return {"safe": False, "issues": ["protected_request: response withheld"], "redacted": "[REDACTED]"}
     issues = []
-    redacted = response
+    normalized = normalize_text(response)
+    redacted = normalized
 
-    # PII patterns to check
+    # Ranh giới chữ số ngăn regex che một phần của CCCD hoặc số dài hơn.
     PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
+        "phone": r"(?<![\w+])(?:0(?:[ .-]?\d){9,10}|\+84(?:[ .-]?\d){9})(?![ .-]?\d)",
+        "email": r"[\w.+%-]+@[\w.-]+\.[a-zA-Z]{2,}",
+        "national_id": r"(?<!\d)(?:\d{12}|\d{9})(?!\d)",
+        "api_key": r"\b(?:sk-[a-zA-Z0-9_-]+|AIza[a-zA-Z0-9_-]{30,})\b",
+        "password": r"\b(?:password|mật\s*khẩu|mat\s*khau)\s*(?:[:=]|\bis\b|là|\bla\b)\s*(?!\[REDACTED\])(?!(?:mở|mo|chọn|chon|open|choose)\s+(?:ứng dụng|ung dung|app|cài đặt|cai dat|settings)\b)[^\s,;]+",
+        "formatted_id": r"\b(?:CCCD|CMND|national\s+id)\s*[:=]?\s*\d(?:[ .-]?\d){8,11}(?![ .-]?\d)",
+        "internal_host": r"\b(?:[a-zA-Z0-9-]+\.)+internal(?::\d+)?\b",
     }
 
+    # Bắt cả secret đứng riêng, không cần nhãn "password=" hay "API key".
+    # Nguồn dữ liệu dùng chung với agent và bộ phát hiện leak của lab.
+    if DEMO_SECRETS:
+        PII_PATTERNS["protected_value"] = "|".join(
+            re.escape(secret)
+            for secret in sorted(DEMO_SECRETS, key=len, reverse=True)
+        )
+
     for name, pattern in PII_PATTERNS.items():
-        matches = re.findall(pattern, response, re.IGNORECASE)
+        matches = re.findall(pattern, normalized, re.IGNORECASE)
         if matches:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
 
+    # A reversible encoding is still disclosure. Withhold the whole message when
+    # a decoded/obfuscated view is sensitive: its offsets do not map to the original.
+    try:
+        views = security_views(response)
+    except InspectionLimitError:
+        return {"safe": False, "issues": ["inspection_limit: too many encoded views"], "redacted": "[REDACTED]"}
+    for view in views:
+        folded = policy_text(view)
+        compact = re.sub(r"[^a-z0-9]", "", folded)
+        # High-confidence literal prefixes only; do not blacklist numeric suffixes
+        # such as 123, which are ordinary amounts/transaction references too.
+        if any(re.search(r"(?<!\w)" + re.escape(policy_text(secret[:3])) + r"(?!\w)", folded)
+               for secret in DEMO_SECRETS if len(secret) >= 6 and not secret[:3].isdigit()):
+            issues.append("protected_fragment: lab secret prefix found")
+            redacted = "[REDACTED]"
+            break
+        if any(
+            needle and (needle in compact or needle in compact[::-1])
+            for secret in DEMO_SECRETS
+            for needle in [re.sub(r"[^a-z0-9]", "", policy_text(secret))]
+        ):
+            if not issues:
+                issues.append("protected_value: encoded or obfuscated value found")
+            redacted = "[REDACTED]"
+            break
+        if view != normalized and any(re.search(pattern, view, re.IGNORECASE) for pattern in PII_PATTERNS.values()):
+            issues.append("encoded_sensitive: decoded PII or credential found")
+            redacted = "[REDACTED]"
+            break
+        if folded != view.casefold() and any(re.search(pattern, folded, re.IGNORECASE) for pattern in PII_PATTERNS.values()):
+            issues.append("obfuscated_sensitive: normalized PII or credential found")
+            redacted = "[REDACTED]"
+            break
+
     return {
         "safe": len(issues) == 0,
         "issues": issues,
-        "redacted": redacted,
+        "redacted": redacted if issues else response,
     }
 
 
@@ -120,11 +175,11 @@ async def llm_safety_check(response_text: str) -> dict:
         dict with 'safe' (bool) and 'verdict' (str)
     """
     if safety_judge_agent is None or judge_runner is None:
-        return {"safe": True, "verdict": "Judge not initialized — skipping"}
+        return {"safe": False, "verdict": "Judge unavailable"}
 
     prompt = f"Evaluate this AI response for safety:\n\n{response_text}"
     verdict, _ = await chat_with_agent(safety_judge_agent, judge_runner, prompt)
-    is_safe = "SAFE" in verdict.upper() and "UNSAFE" not in verdict.upper()
+    is_safe = verdict.strip().upper() == "SAFE"
     return {"safe": is_safe, "verdict": verdict.strip()}
 
 
@@ -143,18 +198,21 @@ async def llm_safety_check(response_text: str) -> dict:
 class OutputGuardrailPlugin(base_plugin.BasePlugin):
     """Plugin that checks agent output before sending to user."""
 
-    def __init__(self, use_llm_judge=True):
+    def __init__(self, use_llm_judge=True, *, judge_timeout_seconds=10):
         super().__init__(name="output_guardrail")
         self.use_llm_judge = use_llm_judge and (safety_judge_agent is not None)
         self.blocked_count = 0
         self.redacted_count = 0
         self.total_count = 0
+        if judge_timeout_seconds <= 0:
+            raise ValueError("judge_timeout_seconds must be positive")
+        self.judge_timeout_seconds = judge_timeout_seconds
 
     def _extract_text(self, llm_response) -> str:
         """Extract text from LLM response."""
         text = ""
         if hasattr(llm_response, "content") and llm_response.content:
-            for part in llm_response.content.parts:
+            for part in llm_response.content.parts or []:
                 if hasattr(part, "text") and part.text:
                     text += part.text
         return text
@@ -172,16 +230,35 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        user_content = getattr(callback_context, "user_content", None)
+        user_text = "".join(part.text or "" for part in (getattr(user_content, "parts", None) or []))
+        filtered = content_filter(response_text, user_input=user_text)
+        final_text = filtered["redacted"]
+        if not filtered["safe"]:
+            self.redacted_count += 1
 
-        return llm_response  # TODO: modify if needed
+        # Judge là tùy chọn; chỉ gửi bản đã che dữ liệu cho bước đánh giá này.
+        if self.use_llm_judge:
+            try:
+                verdict = await asyncio.wait_for(llm_safety_check(final_text), timeout=self.judge_timeout_seconds)
+                approved = isinstance(verdict, dict) and verdict.get("safe") is True
+            except Exception:
+                # No exception body or candidate response is released on failure.
+                approved = False
+            if not approved:
+                self.blocked_count += 1
+                final_text = (
+                    "Tôi chưa thể cung cấp câu trả lời này một cách an toàn. "
+                    "Vui lòng liên hệ nhân viên hỗ trợ VinBank."
+                )
+
+        if final_text != response_text:
+            llm_response.content = types.Content(
+                role="model",
+                parts=[types.Part.from_text(text=final_text)],
+            )
+
+        return llm_response
 
 
 # ============================================================

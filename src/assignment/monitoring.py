@@ -1,5 +1,5 @@
 """
-Assignment 11 — Monitoring & Alerts starter (TODO).
+Assignment 11 — Monitoring and current threshold alerts.
 
 Tracks block rate, rate-limit hits, judge fail rate.
 Fires alerts when thresholds are exceeded.
@@ -40,18 +40,33 @@ class MonitoringAlert:
     rate_limit_hits: int = 0
     judge_checks: int = 0
     judge_fails: int = 0
+    output_redactions: int = 0
+    model_errors: int = 0
+    model_retries: int = 0
+    egress_blocks: int = 0
 
     def check_metrics(self) -> list[Alert]:
-        """TODO: compute rates, append Alert objects when thresholds exceeded."""
-        raise NotImplementedError("Implement MonitoringAlert.check_metrics")
+        """Refresh active alerts; repeated checks do not duplicate them."""
+        values = self.snapshot()
+        checks = [
+            ("block_rate", values["block_rate"], self.block_rate_threshold, self.total_requests > 0),
+            ("rate_limit_hits", self.rate_limit_hits, self.rate_limit_hit_threshold, self.rate_limit_hits > 0),
+            ("judge_fail_rate", values["judge_fail_rate"], self.judge_fail_rate_threshold, self.judge_checks > 0),
+        ]
+        self.alerts = [
+            Alert(metric, value, threshold, f"{metric} reached {value:g} (threshold {threshold:g})")
+            for metric, value, threshold, has_samples in checks
+            if has_samples and value >= threshold
+        ]
+        return self.alerts
 
     def export_json(self, filepath: str | None = None):
-        """TODO: write metrics + alerts to JSON under repo-root ``outputs/`` by default.
-        Use ``filepath or default_metrics_path()`` so running from ``src/`` does not
-        create ``src/outputs/``.
-        """
-        _ = filepath or default_metrics_path()
-        raise NotImplementedError("Implement MonitoringAlert.export_json")
+        """Export counters and the latest active alerts."""
+        self.check_metrics()
+        path = Path(filepath or default_metrics_path())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.snapshot(), ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
 
     def snapshot(self) -> dict:
         block_rate = (
@@ -70,6 +85,10 @@ class MonitoringAlert:
             "judge_checks": self.judge_checks,
             "judge_fails": self.judge_fails,
             "judge_fail_rate": judge_fail_rate,
+            "output_redactions": self.output_redactions,
+            "model_errors": self.model_errors,
+            "model_retries": self.model_retries,
+            "egress_blocks": self.egress_blocks,
             "alerts": [
                 {
                     "metric": a.metric,

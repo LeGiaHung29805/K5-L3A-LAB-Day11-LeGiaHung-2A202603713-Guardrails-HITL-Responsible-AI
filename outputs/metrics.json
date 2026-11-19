@@ -1,0 +1,21 @@
+{
+  "total_requests": 30,
+  "blocked_requests": 14,
+  "block_rate": 0.4666666666666667,
+  "rate_limit_hits": 5,
+  "judge_checks": 0,
+  "judge_fails": 0,
+  "judge_fail_rate": 0.0,
+  "output_redactions": 0,
+  "model_errors": 0,
+  "model_retries": 1,
+  "egress_blocks": 0,
+  "alerts": [
+    {
+      "metric": "rate_limit_hits",
+      "value": 5,
+      "threshold": 5,
+      "message": "rate_limit_hits reached 5 (threshold 5)"
+    }
+  ]
+}

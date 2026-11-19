@@ -1,5 +1,28 @@
 # Day 11 — Controlled Agent Security (2026)
 
+## Thông tin bài nộp
+
+- Họ tên: **Le Gia Hung**
+- MSSV: **2A202603713**
+- Lớp: **K5-L3A**
+- Repository đang cấu hình: [K5-L3A-LAB-Day11-LeGiaHung-2A202603713-Guardrails-HITL-Responsible-AI](https://github.com/LeGiaHung29805/K5-L3A-LAB-Day11-LeGiaHung-2A202603713-Guardrails-HITL-Responsible-AI).
+- Tên theo mẫu trong `SUBMISSION.md`: **K5-L3A-DAY11-LeGiaHung-2A202603713-Guardrails-HITL-Responsible-AI**. Repository hiện tại còn khác mẫu ở phần `LAB-Day11`; cần đối chiếu tên trước khi nộp link.
+- Blue: OpenRouter `liquid/lfm-3-1.7b:free`; Red / Red Advance: OpenAI `gpt-4o-mini`.
+- Báo cáo nộp bài tự sinh: [`outputs/lab_report.md`](outputs/lab_report.md).
+- Kết quả máy kiểm tra: [`outputs/grade_report.json`](outputs/grade_report.json).
+- Bằng chứng chính: [`outputs/results.json`](outputs/results.json) và [`outputs/attack_results.json`](outputs/attack_results.json).
+
+Sau khi cài dependency và điền key trong `.env` tại máy, chạy từ gốc repo:
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 src/main.py --part 2
+.\.venv\Scripts\python.exe -X utf8 src/main.py --part 3
+.\.venv\Scripts\python.exe -X utf8 src/main.py --part 4
+.\.venv\Scripts\python.exe -X utf8 scripts/grade.py --submission-dir . --out outputs/grade_report.json
+```
+
+Bộ kiểm tra CP2 bổ sung: `python scripts/evaluate_cp2.py`; đây là kiểm tra hồi quy cục bộ, không thay thế bằng chứng gọi LLM thật của CP3/CP4. Không commit `.env`, `.venv` hoặc key thật.
+
 > 👤 **Hình thức:** bài tập **cá nhân** (1 người / 1 MSSV).  
 > 🎯 **Mục tiêu:** đóng vai **Blue Team** để học cách xây Guardrails phòng thủ, rồi đóng vai **Red Team** để tấn công agent **Red** hoặc **Red Advance**.  
 > ✅ Làm theo **Checkpoint 1 → 5** trong [`CHECKPOINTS.md`](CHECKPOINTS.md) · nộp theo [`SUBMISSION.md`](SUBMISSION.md).
@@ -62,7 +85,7 @@ Bonus lab chỉ tính **một** trong hai: leak **Red** (B1, tối đa +5) hoặ
 
 ---
 
-## Bộ tài liệu trong repo (quy ước Khóa 4)
+## Bộ tài liệu trong repo
 
 | File | Nội dung |
 |------|----------|
@@ -73,10 +96,7 @@ Bonus lab chỉ tính **một** trong hai: leak **Red** (B1, tối đa +5) hoặ
 | [`RULES.md`](RULES.md) | Quy định AI, sao chép, API key, nộp muộn |
 | [`schemas/results.schema.json`](schemas/results.schema.json) | Schema bắt buộc của `outputs/results.json` |
 
-Codelab lớp: xem `template-codelabs/codelab-day11-k4-l3a.md` (L3A) hoặc bản L3B tương ứng.
-
-**Repo nộp học viên:** `K4-<L3A hoặc L3B>-DAY11-<HoVaTen>-<MSSV>-Guardrails-HITL-Responsible-AI`  
-Ví dụ: `K4-L3A-DAY11-NguyenVanA-2A2026xxxxx-Guardrails-HITL-Responsible-AI`
+**Quy ước tên repo:** dùng mẫu Khóa 5 trong [`SUBMISSION.md`](SUBMISSION.md). Thông tin cá nhân và repository của bài này nằm ở đầu README.
 
 ---
 
@@ -106,7 +126,7 @@ User → Rate Limiter → Input Guardrails → LLM → Output Guardrails
 |-----------|------------|------------------|
 | Starter `src/guardrails/`, `src/assignment/`, `src/attacks/` | Theo Checkpoint 2–4 | `outputs/results.json`, `attack_results.json`, … |
 | `create_red_agent_default()` / `create_red_agent_advance()` | Không sửa secret | — |
-| `hitl/`, `testing/`, Judge, NeMo cho Blue (`guardrails/nemo_guardrails.py`), AI attacks | Tham khảo — không chấm | — |
+| Tests và công cụ kiểm tra trong `tests/`, `scripts/` | Tự kiểm trước khi nộp | — |
 
 **Red Advance** (mục tiêu bonus B2) phòng thủ nhiều lớp — regex **và** [NVIDIA NeMo Guardrails](https://github.com/NVIDIA-NeMo/Guardrails) (bắt buộc, cài qua `requirements.txt`):
 

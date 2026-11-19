@@ -18,11 +18,80 @@ from google.adk.plugins import base_plugin
 from google.adk.agents.invocation_context import InvocationContext
 
 from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS
+from guardrails.text_security import InspectionLimitError, MAX_INPUT_CHARS, normalize_text, policy_text, security_views
 
 # Quyết định rõ ràng — tránh đảo nghĩa True/False
 InputStatus = Literal["ALLOW", "BLOCK"]
 
+# Compile once; independent rule families retain the >=5 regex lab requirement.
+_PROTECTED = (
+    r"(?:admin(?:istrative)?[\s_-]*(?:password|code|sign[\s-]*in)|api[\s_-]*keys?|"
+    r"credentials?|db[\s_-]*host|database[\s_-]*(?:host|credentials?)|"
+    r"(?:internal|hidden|startup|initialization|initial|original|first)[\s_-]*"
+    r"(?:notes?|instructions?|configuration|config|messages?|prompt)|"
+    r"(?:system|developer)[\s_-]*(?:prompt|instructions?|messages?)|"
+    r"ma quan tri|ma tich hop|dia chi luu tru|ghi chu (?:van hanh|khoi tao)|"
+    r"mat khau quan tri|thong tin noi bo|operational data|"
+    r"(?:note|instructions?|message).{0,40}(?:before|prior to).{0,35}(?:conversation|first.{0,15}message))"
+)
+INJECTION_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
+    r"\bignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions?\b",
+    r"\byou\s+are\s+now\b",
+    r"\bsystem\s+prompt\b",
+    r"\breveal\s+your\s+(?:instructions?|prompt)\b",
+    r"\bpretend\s+you\s+are\b",
+    r"\bact\s+as\s+(?:an?\s+)?unrestricted\b",
+    r"\b(?:ignore|disregard|forget|override|bypass|disable|suspend|set aside)\b.{0,80}\b(?:instructions?|rules?|polic(?:y|ies)|guardrails?|safety|filters?)\b",
+    r"\b(?:bo qua|phot lo|vo hieu hoa|khong tuan theo)\b.{0,80}\b(?:huong dan|chi dan|quy tac|chinh sach|bo loc)\b",
+    r"<\|(?:im_start|start_header_id)\|>\s*(?:system|developer)|\[(?:system|developer)\]|</?(?:system|developer)>|###\s*(?:system|developer)",
+    r"\b(?:developer mode|jailbreak mode|do anything now|no restrictions|unrestricted assistant)\b",
+    rf"\b(?:show|print|return|repeat|reveal|disclose|dump|quote|translate|encode|decode|summari[sz]e|complete|fill|give|provide|list|confirm|verify|export|send|write|convert|identify|replace|prepare|tell me|what is|what are)\b.{{0,180}}\b{_PROTECTED}\b",
+    rf"\b{_PROTECTED}\b.{{0,180}}\b(?:exact|verbatim|unredacted|without redaction|base64|rot13|hex|full value|actual value|stored value|characters|prefix|starts with|match|no_match)\b",
+    rf"\b(?:chuyen|cung cap|cho biet|in ra|xuat|liet ke|doc lai|viet|dich|dien|xac nhan|hien thi|tiet lo|lap lai)\b.{{0,180}}\b{_PROTECTED}\b",
+    r"\b(?:hien thi|cung cap|tiet lo|in ra|xuat)\b.{0,100}\b(?:mat khau|khoa api|lenh he thong)\b",
+))
+_SPELLED = tuple((re.compile(r"(?<!\w)" + r"[\W_]*".join(word) + r"(?!\w)"), word)
+                 for word in ("ignore", "system", "prompt", "instructions", "password", "developer", "reveal"))
+_PRIOR_MATERIAL = re.compile(
+    r"\b(?:initialization material|setup material|startup material|"
+    r"material.{0,100}(?:earlier|before|when this chat opened)|"
+    r"ghi chu.{0,100}(?:truoc|khoi tao)|nota de arranque)\b"
+)
+_PRIVILEGED_SEQUENCE = re.compile(
+    r"\b(?:operator.{0,45}(?:access|sign[ -]?on|login).{0,20}(?:sequence|string|code)|"
+    r"chuoi dang nhap.{0,65}(?:van hanh|quan tri)|secuencia de acceso del operador)\b"
+)
+_EXTRACTION_OR_PROBE = re.compile(
+    r"\b(?:copy|take|reproduce|extract|inspect|return|give|print|find|make|create|reads?|"
+    r"first|final|characters?|symbols?|mnemonic|code points?|eight|lay|ky tu|"
+    r"hien thi|doc lai|do dai|escribe|caracteres)\b"
+)
 
+
+def _protected_request_view(text: str) -> bool:
+    """Combine provenance/privilege with extraction intent across the request.
+
+    No claim of semantic completeness: these are deterministic policy signals.
+    Ordinary questions about creating/resetting one's own password stay allowed.
+    """
+    return bool((_PRIOR_MATERIAL.search(text) or _PRIVILEGED_SEQUENCE.search(text))
+                and _EXTRACTION_OR_PROBE.search(text))
+
+
+def requests_protected_information(text: str) -> bool:
+    if len(text) > MAX_INPUT_CHARS:
+        return True
+    try:
+        return any(_protected_request_view(_policy_view(view)) for view in security_views(text))
+    except InspectionLimitError:
+        return True
+
+
+def _policy_view(text: str) -> str:
+    text = policy_text(text)
+    for pattern, word in _SPELLED:
+        text = pattern.sub(word, text)
+    return text
 # ============================================================
 # Implement detect_injection()
 #
@@ -43,25 +112,20 @@ InputStatus = Literal["ALLOW", "BLOCK"]
 # ============================================================
 
 def detect_injection(user_input: str) -> InputStatus:
-    """Detect prompt injection patterns in user input.
-
-    Args:
-        user_input: The user's message
-
-    Returns:
-        ``"BLOCK"`` if injection detected (chặn), ``"ALLOW"`` otherwise (cho qua).
-    """
-    INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
-    ]
-
-    for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+    if len(user_input) > MAX_INPUT_CHARS:
+        return "BLOCK"
+    try:
+        views = security_views(user_input)
+    except InspectionLimitError:
+        return "BLOCK"
+    for view in views:
+        text = _policy_view(view)
+        word_separated = re.sub(r"[-_./]+", " ", text)
+        if _protected_request_view(text) or _protected_request_view(word_separated):
+            return "BLOCK"
+        if any(pattern.search(candidate) for candidate in (text, word_separated) for pattern in INJECTION_PATTERNS):
             return "BLOCK"
     return "ALLOW"
-
 
 # ============================================================
 # Implement topic_filter()
@@ -75,24 +139,25 @@ def detect_injection(user_input: str) -> InputStatus:
 # ============================================================
 
 def topic_filter(user_input: str) -> InputStatus:
-    """Decide whether the input is on-topic for VinBank.
+    text = policy_text(user_input)
+    # Recognize specific defensive reports; other harmful terms still get checked.
+    # A benign first clause cannot exempt a later instruction to attack someone.
+    prohibited_view = text
+    for pattern in (
+        r"\bmy (?:bank )?account (?:was|has been|got) hacked\b",
+        r"\b(?:report|dispute|investigate|block|prevent|detect) (?:illegal|unauthori[sz]ed|gambling) (?:bank |card )?(?:transactions?|payments?|charges?)\b",
+        r"\b(?:protect|secure) my (?:bank )?account from (?:hacking|hackers)\b",
+    ):
+        prohibited_view = re.sub(pattern, " ", prohibited_view)
+    # Whole words avoid accidental matches such as "kill" inside "skills".
+    if any(re.search(r"\b" + re.escape(topic) + r"(?:s|es|ed|ing|ers?)?\b", prohibited_view)
+           for topic in BLOCKED_TOPICS):
+        return "BLOCK"
+    topics = (*ALLOWED_TOPICS, "bank statement", "sao ke", "the ghi no", "vinbank")
+    if any(re.search(r"\b" + re.escape(topic) + r"s?\b", text) for topic in topics):
+        return "ALLOW"
 
-    Args:
-        user_input: The user's message
-
-    Returns:
-        ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
-        ``"ALLOW"`` = cho qua (câu banking hợp lệ).
-    """
-    input_lower = user_input.lower()
-
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return "BLOCK"
-    # 2. If input doesn't contain any allowed topic -> return "BLOCK"
-    # 3. Otherwise -> return "ALLOW"
-
-    pass  # Replace with your implementation
-
+    return "BLOCK"
 
 # ============================================================
 # Implement InputGuardrailPlugin
@@ -144,14 +209,21 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 3. If both return "ALLOW": return None (let message through)
+        if detect_injection(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "Yêu cầu chứa chỉ dẫn không phù hợp. "
+                "Tôi có thể hỗ trợ các câu hỏi ngân hàng."
+            )
 
-        pass  # Replace with your implementation
+        if topic_filter(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "Tôi chỉ hỗ trợ các câu hỏi thuộc phạm vi ngân hàng."
+            )
+
+        # Trong runtime Blue, None cho phép request tiếp tục đến model.
+        return None
 
 
 # ============================================================
